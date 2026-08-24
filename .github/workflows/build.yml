@@ -1,0 +1,18 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Build and self-check
+        run: |
+          chmod +x scripts/build.sh
+          scripts/build.sh
+      - name: Verify checksums
+        run: test -s outputs/SHA256SUMS
