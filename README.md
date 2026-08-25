@@ -1,4 +1,4 @@
-# Process Memory Guard 2.1.0
+# Process Memory Guard 2.1.1
 
 Process Memory Guard is a native macOS menu-bar monitor for signed process rules. Rules remain organized by application group and every rule keeps its own physical-memory threshold. A group may additionally have an optional aggregate threshold for the sum of its enabled members.
 
@@ -11,6 +11,8 @@ Process Memory Guard is a native macOS menu-bar monitor for signed process rules
 - `DispatchSourceMemoryPressure` maintains `unknown`, `normal`, `warning`, and `critical`. Host pressure can raise the displayed status/icon, but never starts an incident by itself.
 
 The console distinguishes `未运行`, `已禁用`, `身份失效`, `正常`, `warning`, and `critical`, and shows current value, incident/session peak, a compact trend, and group member contributions. Notification actions open and focus the rule, accept a new rule threshold directly, or pause the event for one hour.
+
+The console also automatically discovers readable live processes through macOS `libproc`, grouped by exact executable path like a lightweight Activity Monitor. Discovery is observational and refreshed on the normal interval; it does not silently create alert rules. Use “监视” on a discovered row to promote it into a persistent, code-identity-verified rule with a conservative initial threshold.
 
 ## Safety model
 

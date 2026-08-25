@@ -6,7 +6,7 @@ build_dir="$project_dir/work/build"
 app_dir="$project_dir/outputs/Process Memory Guard.app"
 binary="$app_dir/Contents/MacOS/ProcessMemoryGuard"
 source_stage="$build_dir/Process-Memory-Guard-source"
-version="2.1.0"
+version="2.1.1"
 
 mkdir -p "$build_dir" "$project_dir/outputs" "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 

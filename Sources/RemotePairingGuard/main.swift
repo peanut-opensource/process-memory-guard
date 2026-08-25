@@ -9,7 +9,7 @@ import UserNotifications
 
 private enum Constants {
     static let appName = "Process Memory Guard"
-    static let version = "2.1.0"
+    static let version = "2.1.1"
     static let defaultPath = "/Library/Apple/System/Library/PrivateFrameworks/RemotePairing.framework/Versions/A/XPCServices/remotepairingd.xpc/Contents/MacOS/remotepairingd"
     static let defaultIdentifier = "com.apple.CoreDevice.remotepairingd"
     static let openAIEndpoint = URL(string: "https://api.openai.com/v1/responses")!
@@ -48,6 +48,16 @@ private struct SavedConfiguration: Codable {
 private struct ProcessSample {
     let pid: pid_t
     let footprint: UInt64
+}
+
+private struct DiscoveredProcess: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let executablePath: String
+    let pids: [pid_t]
+    let footprint: UInt64
+    let signingIdentifier: String
+    let signatureStatus: String
 }
 
 private enum RuleScan {
@@ -184,6 +194,27 @@ private enum CodeIdentity {
 }
 
 private enum ProcessInspector {
+    static func discoverAll() -> [DiscoveredProcess] {
+        let estimated = proc_listallpids(nil, 0)
+        guard estimated > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(estimated) + 64)
+        let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard count >= 0 else { return [] }
+        var grouped: [String: (name: String, pids: [pid_t], footprint: UInt64)] = [:]
+        for pid in pids.prefix(Int(count)) where pid > 0 {
+            guard let path = executablePath(pid), let footprint = physicalFootprint(pid) else { continue }
+            let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            var value = grouped[path] ?? (name, [], 0)
+            value.pids.append(pid); value.footprint += footprint; grouped[path] = value
+        }
+        return grouped.map { path, value in
+            let identity = (try? CodeIdentity.inspect(path: path).get())
+            return DiscoveredProcess(id: path, name: value.name, executablePath: path, pids: value.pids,
+                                     footprint: value.footprint, signingIdentifier: identity?.identifier ?? "未知",
+                                     signatureStatus: identity == nil ? "未验证" : "已验证")
+        }.sorted { $0.footprint > $1.footprint }
+    }
+
     static func scan(rules: [ProcessRule]) -> [UUID: RuleScan] {
         let enabled = rules.filter(\.enabled)
         var result = Dictionary(uniqueKeysWithValues: enabled.map { ($0.id, RuleScan.notRunning) })
@@ -388,6 +419,7 @@ private enum AIAnalyzer {
 private final class MonitorStore: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var groups: [AppGroup]
     @Published private(set) var rules: [ProcessRule]
+    @Published private(set) var discovered: [DiscoveredProcess] = []
     @Published private(set) var runtime: [UUID: RuleRuntime] = [:]
     @Published private(set) var groupRuntime: [UUID: GroupRuntime] = [:]
     @Published private(set) var memoryPressure: MemoryPressureState = .unknown
@@ -680,7 +712,24 @@ private final class MonitorStore: NSObject, ObservableObject, UNUserNotification
     private func performScan() {
         let snapshot = rules
         let results = ProcessInspector.scan(rules: snapshot)
-        DispatchQueue.main.async { [weak self] in self?.consume(results) }
+        let discovered = ProcessInspector.discoverAll()
+        DispatchQueue.main.async { [weak self] in
+            self?.discovered = discovered
+            self?.consume(results)
+        }
+    }
+
+    func promote(_ process: DiscoveredProcess, to groupID: UUID) {
+        guard !rules.contains(where: { $0.executablePath == process.executablePath }) else { return }
+        guard let identity = try? CodeIdentity.inspect(path: process.executablePath).get() else {
+            postInfo("无法添加进程", "该进程的代码签名无法验证，已保持为仅观察状态。")
+            return
+        }
+        let threshold = min(max(UInt64(512 * 1_048_576), process.footprint * 2), UInt64(8) * Constants.gib)
+        rules.append(ProcessRule(id: UUID(), groupID: groupID, name: process.name, executablePath: process.executablePath,
+                                 signingIdentifier: identity.identifier, signingRequirement: identity.requirement,
+                                 thresholdBytes: threshold, enabled: true))
+        persist(); checkNow()
     }
 
     private func consume(_ results: [UUID: RuleScan]) {
@@ -1099,6 +1148,24 @@ private struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("进程规则").font(.headline).padding(10)
                     List(selection: $selectedRule) {
+                        Section("自动发现 · 全部当前进程") {
+                            ForEach(store.discovered.prefix(200)) { process in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(process.name)
+                                        Text("\(formatBytes(process.footprint)) · PID \(process.pids.map(String.init).joined(separator: ",")) · \(process.signatureStatus)")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if !store.rules.contains(where: { $0.executablePath == process.executablePath }) {
+                                        Button("监视") {
+                                            if let group = selectedGroup { store.promote(process, to: group) }
+                                        }.buttonStyle(.borderless)
+                                    } else { Text("已监视").font(.caption).foregroundStyle(.secondary) }
+                                }
+                                .help(process.executablePath)
+                            }
+                        }
                         ForEach(store.rules(in: selectedGroup)) { rule in
                             let status = store.displayStatus(rule)
                             HStack {
